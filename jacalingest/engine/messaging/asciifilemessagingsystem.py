@@ -1,7 +1,7 @@
 import binascii
 import logging
 import os
-from jacalstreaming.engine.messagingsystem import MessagingSystem
+from jacalingest.engine.messaging.messagingsystem import MessagingSystem
 
 # ISSUES: Sometimes complains about padding error when decoding in poll. Maybe a file write/read race condition?
 
@@ -11,21 +11,22 @@ class AsciiFileMessagingSystem(MessagingSystem):
 
         self.message_providers = dict()
 
+    """Returns a cursor to be used to poll for messages."""
+    def subscribe(self, topic):
+        if topic not in self.message_providers:
+            logging.debug("Spinning up message generator for topic %s" % topic)
+            self.message_providers[topic] = AsciiFileMessagingSystem.MessageProvider(topic)
+        return 0
+
     def publish(self, topic, serialized_message):
         logging.debug("Publishing message %s to topic %s" % (serialized_message, topic))
 
         #logging.info("Start of unencoded: %s" % serialized_message[:20])
         encoded_message = binascii.b2a_base64(serialized_message)
         #logging.info("Start of encoded: %s" % encoded_message[:20])
-        topicpath = "messagelog_%s.txt" % (topic)
+        topicpath = "messagelog_%s.txt" % topic
         with open(topicpath, "a") as f:
             f.write(encoded_message)
-
-    def subscribe(self, topic):
-        if topic not in self.message_providers:
-            logging.debug("Spinning up message generator for topic %s" % topic)
-            self.message_providers[topic] = AsciiFileMessagingSystem.MessageProvider(topic)
-        return 0
 
     def poll(self, topic, cursor):
         logging.debug("Polling for message on topic %s" % topic)
@@ -52,15 +53,15 @@ class AsciiFileMessagingSystem(MessagingSystem):
 
         def _check(self):
             if not os.path.exists(self.topicpath):
-                logging.debug("No message for topic %s has yet been written" % self.topic)
+                logging.debug("No message has yet been written for topic %s" % self.topic)
                 return False
             return self._update()
 
         def _update(self):
             if os.stat(self.topicpath).st_mtime == self.timestamp:
-                logging.debug("No new messages for topic %s have been written since last update." % self.topic)
+                logging.debug("No new messages have been written since last update for topic %s." % self.topic)
                 return False
-            logging.debug("A message for topic %s has been written since last read" % self.topic)
+            logging.debug("A message has been written since last read of topic %s." % self.topic)
             self.timestamp = os.stat(self.topicpath).st_mtime
             with open(self.topicpath, "r") as f:
                 lines = f.readlines()
