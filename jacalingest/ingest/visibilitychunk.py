@@ -1,7 +1,7 @@
 import logging
 import struct
 
-from jacalingest.engine.message import Message
+from jacalingest.engine.messaging.message import Message
 from jacalingest.ingest.tosmetadata import TOSMetadata
 
 class VisibilityChunk(Message):
@@ -26,13 +26,14 @@ class VisibilityChunk(Message):
     def add_visibility(self, visibility):
         self.visibility_count = self.visibility_count + 1
 
-    def serialize(self):
-        serialized = (VisibilityChunk.TupleSerializer("!Qi?d").serialize((self.timestamp, self.scanid, self.flagged, self.sky_frequency))
-                     + VisibilityChunk.StringSerializer().serialize(self.target_name)
-                     + VisibilityChunk.TupleSerializer("!dddd").serialize((self.target_ra, self.target_dec, self.phase_ra, self.phase_dec))
-                     + VisibilityChunk.StringSerializer().serialize(self.corrmode)
-                     + VisibilityChunk.DictSerializer(VisibilityChunk.StringSerializer(), VisibilityChunk.TupleSerializer("!ddddd??")).serialize(self.antennas)
-                     + VisibilityChunk.TupleSerializer("!I").serialize((self.visibility_count,)))
+    @staticmethod
+    def serialize(deserialized):
+        serialized = (VisibilityChunk.TupleSerializer("!Qi?d").serialize((deserialized.timestamp, deserialized.scanid, deserialized.flagged, deserialized.sky_frequency))
+                     + VisibilityChunk.StringSerializer().serialize(deserialized.target_name)
+                     + VisibilityChunk.TupleSerializer("!dddd").serialize((deserialized.target_ra, deserialized.target_dec, deserialized.phase_ra, deserialized.phase_dec))
+                     + VisibilityChunk.StringSerializer().serialize(deserialized.corrmode)
+                     + VisibilityChunk.DictSerializer(VisibilityChunk.StringSerializer(), VisibilityChunk.TupleSerializer("!ddddd??")).serialize(deserialized.antennas)
+                     + VisibilityChunk.TupleSerializer("!I").serialize((deserialized.visibility_count,)))
         return serialized
 
     @staticmethod

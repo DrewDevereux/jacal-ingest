@@ -1,29 +1,25 @@
 import logging
 import Queue
 
-from jacalingest.engine.drainservice import DrainService
+from jacalingest.engine.handlerservice import HandlerService
 from jacalingest.ingest.tosmetadata import TOSMetadata
 from jacalingest.ingest.visibilitydatagram import VisibilityDatagram
 from jacalingest.ingest.visibilitychunk import VisibilityChunk
 
-class AlignService(DrainService):
-    def __init__(self, messaging_context, tos_metadata_topic, tos_metadata_topic_group, visibility_datagram_topic, visibility_datagram_topic_group, visibility_chunk_topic, visibility_chunk_topic_group, tos_metadata_status_topic, visibility_datagram_status_topic, my_status_topic, status_topic_group, terminate=False):
-        logging.debug("Initializing")
+class AlignService(HandlerService):
+    IDLE_STATE = 1
+    PROCESSING_STATE = 2
 
-        topic_map = {tos_metadata_topic:tos_metadata_topic_group,
-                     visibility_datagram_topic:visibility_datagram_topic_group,
-                     visibility_chunk_topic:visibility_chunk_topic_group,
-                     tos_metadata_status_topic:status_topic_group,
-                     visibility_datagram_status_topic:status_topic_group,
-                     my_status_topic:status_topic_group}
-        handlers = {tos_metadata_topic:self.handle_tos_metadata,
-                    visibility_datagram_topic:self.handle_visibility_datagram,
-                    tos_metadata_status_topic:self.handle_tos_metadata_status,
-                    visibility_datagram_status_topic:self.handle_visibility_datagram_status}
-        super(AlignService, self).__init__(messaging_context, topic_map, handlers, terminate=terminate)
+    def __init__(self, metadata_endpoint, datagram_endpoint, chunk_endpoint, control_endpoint):
+        logging.info("Initializing")
 
-        self.visibility_chunk_topic = visibility_chunk_topic
-        self.my_status_topic = my_status_topic
+        super(AlignService, self).__init__(self.IDLE_STATE)
+
+        self.set_handler(metadata_endpoint, self.handle_tos_metadata, [self.PROCESSING_STATE])
+        self.set_handler(datagram_endpoint, self.handle_visibility_datagram, [self.PROCESSING_STATE])
+        self.set_handler(control_endpoint, self.handle_control, [self.IDLE_STATE, self.PROCESSING_STATE])
+
+        self.chunk_endpoint = chunk_endpoint
 
         self.tos_draining = False
         self.vis_draining = False
@@ -34,27 +30,29 @@ class AlignService(DrainService):
         self.current_chunk = None
         self.current_visibility = None
 
+
+    def handle_control(self, message):
+        if message.payload == "Start":
+            logging.info("Received 'Start' control message")
+            return self.PROCESSING_STATE
+        elif message.payload == "Stop":
+            logging.info("Received 'Stop' control message")
+            return self.IDLE_STATE
+        else:
+            logging.info("Received unknown control message: {}".format(message.payload))
+            return None
+
     def handle_tos_metadata(self, message):
-        self.metadata_queue.put(TOSMetadata.deserialize(message))
+        self.metadata_queue.put(message)
+        self.do_align()
+        return None
 
     def handle_visibility_datagram(self, message):
-        self.datagram_queue.put(VisibilityDatagram.deserialize(message))
+        self.datagram_queue.put(message)
+        self.do_align()
+        return None
 
-    def handle_tos_metadata_status(self, message):
-        if message == "Finished":
-            logging.info("Received 'Finished' message (TOS metadata)")
-            self.tos_draining = True
-            if self.vis_draining:
-                self.drain()
-
-    def handle_visibility_datagram_status(self, message):
-        if message == "Finished":
-            logging.info("Received 'Finished' message (visibility datagrams)")
-            self.vis_draining = True
-            if self.tos_draining:
-                self.drain()
-
-    def step(self):
+    def do_align(self):
         if not self.current_chunk:
             if not self.metadata_queue.empty():
                tos_metadata = self.metadata_queue.get_nowait()
@@ -64,39 +62,21 @@ class AlignService(DrainService):
         if not self.current_visibility:
             if not self.datagram_queue.empty():
                 self.current_visibility = self.datagram_queue.get_nowait()
-                logging.info("Received visibility with timestamp {}".format(self.current_visibility.timestamp))
+                logging.debug("Received visibility with timestamp {}".format(self.current_visibility.timestamp))
 
-        if not self.current_chunk and not self.current_visibility:
-            logging.debug("No message on either stream; returning False.")
-            return False
+        #if not self.current_chunk and not self.current_visibility:
+            #logging.debug("No message on either stream.")
 
-        if self.current_visibility and self.tos_draining and not self.current_chunk:
-            logging.info("Discarding visibility because TOS metadata stream has drained.")
-            self.current_visibility = None
-
-        if self.current_chunk and self.vis_draining and not self.current_visibility:
-            logging.info("Sending chunk because visibilility stream has drained.")
-            self.publish(self.visibility_chunk_topic, self.current_chunk.serialize())
-            self.current_chunk = None
-            
         if self.current_chunk and self.current_visibility:
             if self.current_chunk.timestamp < self.current_visibility.timestamp:
                 logging.info("Newer visibility triggers sending of chunk ({} > {})".format(self.current_visibility.timestamp, self.current_chunk.timestamp))
-                self.publish(self.visibility_chunk_topic, self.current_chunk.serialize())
+                self.messager.publish(self.chunk_endpoint, self.current_chunk)
                 self.current_chunk = None
             else:
                 if self.current_chunk.timestamp == self.current_visibility.timestamp:
-                    logging.info("Adding a visibility to the current chunk ({} = {})".format(self.current_visibility.timestamp, self.current_chunk.timestamp))
+                    logging.debug("Adding a visibility to the current chunk ({} = {})".format(self.current_visibility.timestamp, self.current_chunk.timestamp))
                     self.current_chunk.add_visibility(self.current_visibility)
                 else:
                     logging.info("Discarding an old visibility ({} < {})".format(self.current_visibility.timestamp, self.current_chunk.timestamp))
                 self.current_visibility = None
-
-        return True
-
-    def drained(self):
-        logging.info("Drained; sending 'Finished' message on topic {}".format(self.my_status_topic))
-        self.publish(self.my_status_topic, "Finished")
-        super(AlignService, self).drained()
-
 

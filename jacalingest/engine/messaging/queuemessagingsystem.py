@@ -39,4 +39,3 @@ class QueueMessagingSystem(MessagingSystem):
         if topic in self.message_queues:
             for queue in self.message_queues[topic]:
                 queue.put(message)
-

@@ -2,9 +2,11 @@ import logging
 import time
 import unittest
 
+from jacalingest.engine.servicecontainer import ServiceContainer
+from jacalingest.engine.messaging.messager import Messager
+from jacalingest.engine.messaging.queuemessagingsystem import QueueMessagingSystem
+from jacalingest.stringdomain.stringmessage import StringMessage
 from jacalingest.stringdomain.stringwriterservice import StringWriterService
-from jacalingest.engine.queuemessagingsystem import QueueMessagingSystem
-from jacalingest.engine.service import Service
 
 class TestStringWriterService(unittest.TestCase):
 
@@ -14,18 +16,23 @@ class TestStringWriterService(unittest.TestCase):
 
     def test(self):
    
-        queue_messaging_system = QueueMessagingSystem()
-        messaging_context = {"DATA": (queue_messaging_system, Service.WHEN_PROCESSING),
-                             "M&C": (queue_messaging_system, Service.ALWAYS)}
-        string_writer_service = StringWriterService(messaging_context, "string","DATA", "status", "M&C", "output.txt")
-        string_writer_service.start()
+        messaging_system = QueueMessagingSystem()
+        messager = Messager()
+        string_endpoint = messager.get_endpoint(messaging_system, "string", StringMessage)
+        control_endpoint = messager.get_endpoint(messaging_system, "control", StringMessage)
+
+
+        string_writer_service = StringWriterService(string_endpoint, control_endpoint, "output.txt")
+        string_writer_service_container = ServiceContainer(string_writer_service, messager)
+
+        string_writer_service_container.start()
         time.sleep(5)
-        string_writer_service.start_processing()
+        messager.publish(control_endpoint, StringMessage("Start"))
         time.sleep(10)
-        string_writer_service.stop_processing()
+        messager.publish(control_endpoint, StringMessage("Stop"))
         time.sleep(5)
-        string_writer_service.terminate()
-        string_writer_service.wait()
+        string_writer_service_container.terminate()
+        string_writer_service_container.wait()
 
 if __name__ == '__main__':
     unittest.main()

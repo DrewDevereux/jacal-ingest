@@ -1,38 +1,34 @@
 import logging
 
-from jacalingest.engine.drainservice import DrainService
+from jacalingest.engine.handlerservice import HandlerService
+from jacalingest.stringdomain.stringmessage import StringMessage
 
-class ToStringService(DrainService):
-    def __init__(self, messaging_context, in_message_class, in_topic, out_topic, topic_group, in_status_topic, out_status_topic, status_group, terminate=False):
+class ToStringService(HandlerService):
+    IDLE_STATE = 1
+    PROCESSING_STATE = 2
+
+    def __init__(self, in_endpoint, out_endpoint, control_endpoint):
         logging.debug("Initializing")
 
-        topic_map={in_topic: topic_group,
-                   out_topic: topic_group,
-                   in_status_topic: status_group,
-                   out_status_topic: status_group}
+        super(ToStringService, self).__init__(self.IDLE_STATE)
 
-        handlers={in_topic: self.handle_message,
-                   in_status_topic: self.handle_status}
+        self.set_handler(in_endpoint, self.handle_message, [self.PROCESSING_STATE])
+        self.set_handler(control_endpoint, self.handle_control, [self.IDLE_STATE, self.PROCESSING_STATE])
 
-        super(ToStringService, self).__init__(messaging_context, topic_map, handlers, terminate)
+        self.out_endpoint = out_endpoint
 
-        self.in_message_class = in_message_class
-        self.out_topic = out_topic
-        self.out_status_topic = out_status_topic
-
-    def handle_status(self,message):
-        if message == "Finished":
-            logging.info("Received 'Finished' message")
-            self.drain()
+    def handle_control(self,message):
+        if message.payload == "Start":
+            logging.info("Received 'Start' control message")
+            return self.PROCESSING_STATE
+        elif message.payload == "Stop":
+            logging.info("Received 'Stop' control message")
+            return self.IDLE_STATE
+        else:
+            logging.info("Received unknown control message '{}'".format(message.payload))
+            return None
 
     def handle_message(self,message):
-        message_object = self.in_message_class.deserialize(message)
-        self.publish(self.out_topic, str(message_object))
-
-    def drained(self):
-        if self.out_status_topic:
-            logging.info("Drained; Sending 'Finished' message on topic {}".format(self.out_status_topic))
-            self.publish(self.out_status_topic, "Finished")
-
-        super(ToStringService, self).drained()
+        self.out_endpoint.publish(StringMessage(str(message)))
+        return None
 

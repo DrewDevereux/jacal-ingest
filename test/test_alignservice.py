@@ -3,13 +3,19 @@ import os
 import time
 import unittest
 
-from jacalingest.engine.queuemessagingsystem import QueueMessagingSystem
-from jacalingest.engine.service import Service
+from jacalingest.engine.servicecontainer import ServiceContainer
+from jacalingest.engine.messaging.messager import Messager
+from jacalingest.engine.messaging.queuemessagingsystem import QueueMessagingSystem
+from jacalingest.ingest.visibilitydatagram import VisibilityDatagram
 from jacalingest.ingest.visibilitydatagramsourceservice import VisibilityDatagramSourceService
 from jacalingest.ingest.icemetadatasourceservice import IceMetadataSourceService
 from jacalingest.ingest.tosmetadata import TOSMetadata
 from jacalingest.ingest.visibilitychunk import VisibilityChunk
 from jacalingest.ingest.alignservice import AlignService
+from jacalingest.monitoringandcontrol.genericmonitorservice import GenericMonitorService
+from jacalingest.monitoringandcontrol.metrics import Metrics
+from jacalingest.monitoringandcontrol.monitoradapter import MonitorAdapter
+from jacalingest.stringdomain.stringmessage import StringMessage
 from jacalingest.stringdomain.stringwriterservice import StringWriterService
 from jacalingest.stringdomain.tostringservice import ToStringService
 from jacalingest.testbed.icerunner import IceRunner
@@ -23,9 +29,26 @@ class TestAlignService(unittest.TestCase):
 
 
     def test(self):
-        queue_messaging_system = QueueMessagingSystem()
-        messaging_context = {"DATA": (queue_messaging_system, Service.WHEN_PROCESSING),
-                             "M&C": (queue_messaging_system, Service.ALWAYS)}
+        messaging_system = QueueMessagingSystem()
+        messager = Messager()
+
+        metadata_endpoint = messager.get_endpoint(messaging_system, "metadata", TOSMetadata)
+        metadata_control_endpoint = messager.get_endpoint(messaging_system, "metadatacontrol", StringMessage)
+        metadata_metrics_endpoint = messager.get_endpoint(messaging_system, "metadatametrics", Metrics)
+
+        datagram_endpoint = messager.get_endpoint(messaging_system, "datagram", VisibilityDatagram)
+        datagram_control_endpoint = messager.get_endpoint(messaging_system, "datagramcontrol", StringMessage)
+        datagram_metrics_endpoint = messager.get_endpoint(messaging_system, "datagrammetrics", Metrics)
+
+        chunk_endpoint = messager.get_endpoint(messaging_system, "chunk", VisibilityChunk)
+        align_control_endpoint = messager.get_endpoint(messaging_system, "aligncontrol", StringMessage)
+        align_metrics_endpoint = messager.get_endpoint(messaging_system, "alignmetrics", Metrics)
+
+        chunk_string_endpoint = messager.get_endpoint(messaging_system, "chunkstring", StringMessage)
+        to_string_control_endpoint = messager.get_endpoint(messaging_system, "to_stringcontrol", StringMessage)
+        to_string_metrics_endpoint = messager.get_endpoint(messaging_system, "to_stringmetrics", Metrics)
+        string_writer_control_endpoint = messager.get_endpoint(messaging_system, "stringwritercontrol", StringMessage)
+        string_writer_metrics_endpoint = messager.get_endpoint(messaging_system, "stringwritermetrics", Metrics)
 
         # start Ice
         logging.info("Starting Ice")
@@ -33,33 +56,46 @@ class TestAlignService(unittest.TestCase):
         ice_runner.start()
     
         # set up the ice metadata source service
-        ice_metadata_source_service = IceMetadataSourceService("localhost", 4061, "IceStorm/TopicManager@IceStorm.TopicManager", "metadata", "IngestPipeline", messaging_context, "metadata", "DATA", "playbackstatus", "metadatastatus", "M&C", terminate=True)
- 
+        ice_metadata_source_service = IceMetadataSourceService("localhost", 4061, "IceStorm/TopicManager@IceStorm.TopicManager", "metadata", "IngestPipeline", metadata_endpoint, metadata_control_endpoint)
+        ice_metadata_source_monitor_adapter = MonitorAdapter(ice_metadata_source_service, "ice_metadata_source_service", metadata_metrics_endpoint)
+        ice_metadata_source_service_container = ServiceContainer(ice_metadata_source_monitor_adapter, messager)
+
         # set up the visibility datagram source service
-        visibility_datagram_source_service = VisibilityDatagramSourceService("localhost", 3000, messaging_context, "datagram", "DATA", "playbackstatus", "datagramstatus", "M&C", terminate=True)
+        visibility_datagram_source_service = VisibilityDatagramSourceService("localhost", 3000, datagram_endpoint, datagram_control_endpoint)
+        visibility_datagram_source_monitor_adapter = MonitorAdapter(visibility_datagram_source_service, "visibility_datagram_source_service", datagram_metrics_endpoint)
+        visibility_datagram_source_service_container = ServiceContainer(visibility_datagram_source_monitor_adapter, messager)
 
         # set up the align service
-        align_service = AlignService(messaging_context, "metadata", "DATA", "datagram", "DATA", "chunk", "DATA", "metadatastatus", "datagramstatus", "alignstatus", "M&C", terminate=True)
+        align_service = AlignService(metadata_endpoint, datagram_endpoint, chunk_endpoint, align_control_endpoint)
+        align_monitor_adapter = MonitorAdapter(align_service, "align_service", align_metrics_endpoint)
+        align_service_container = ServiceContainer(align_monitor_adapter, messager)
         
-        to_string_service = ToStringService(messaging_context, TOSMetadata, "metadata", "metadatastring", "DATA", "metadatastatus", "tostringstatus", "M&C", terminate=True)
+        to_string_service = ToStringService(chunk_endpoint, chunk_string_endpoint, to_string_control_endpoint)
+        to_string_monitor_adapter = MonitorAdapter(to_string_service, "to_string_service", to_string_metrics_endpoint)
+        to_string_service_container = ServiceContainer(to_string_monitor_adapter, messager)
 
-        string_writer_service = StringWriterService(messaging_context, "metadatastring", "DATA", "tostringstatus", "M&C", "output.txt", terminate=True)
+        string_writer_service = StringWriterService(chunk_string_endpoint, string_writer_control_endpoint, "output.txt")
+        string_writer_monitor_adapter = MonitorAdapter(string_writer_service, "string_writer_service", string_writer_metrics_endpoint)
+        string_writer_service_container = ServiceContainer(string_writer_monitor_adapter, messager)
+
+        monitor_service = GenericMonitorService([datagram_metrics_endpoint, metadata_metrics_endpoint, align_metrics_endpoint, to_string_metrics_endpoint, string_writer_metrics_endpoint])
+        monitor_service_container = ServiceContainer(monitor_service, messager)
 
     
         logging.info("Starting services")
-        visibility_datagram_source_service.start()
-        ice_metadata_source_service.start()
-        align_service.start()
-        to_string_service.start()
-        string_writer_service.start()
+        monitor_service_container.start()
+        visibility_datagram_source_service_container.start()
+        ice_metadata_source_service_container.start()
+        align_service_container.start()
+        to_string_service_container.start()
+        string_writer_service_container.start()
     
         logging.info("Starting processing")
-        visibility_datagram_source_service.start_processing()
-        ice_metadata_source_service.start_processing()
-        align_service.start_processing()
-        to_string_service.start_processing()
-        string_writer_service.start_processing()
-    
+        messager.publish(datagram_control_endpoint, StringMessage("Start"))
+        messager.publish(metadata_control_endpoint, StringMessage("Start"))
+        messager.publish(align_control_endpoint, StringMessage("Start"))
+        messager.publish(to_string_control_endpoint, StringMessage("Start"))
+        messager.publish(string_writer_control_endpoint, StringMessage("Start"))
 
         # start playback
         logging.info("Starting playback")
@@ -67,24 +103,27 @@ class TestAlignService(unittest.TestCase):
         playback.playback("data/ade1card.ms")
         playback.wait()
     
-        logging.info("Playback has finished; sending drain message.")
-        queue_messaging_system.publish("playbackstatus", "Finished")
+        time.sleep(10)
+        messager.publish(datagram_control_endpoint, StringMessage("Stop"))
+
+        time.sleep(5)
+        messager.publish(metadata_control_endpoint, StringMessage("Stop"))
+
+        time.sleep(5)
+        messager.publish(align_control_endpoint, StringMessage("Stop"))
+
+        time.sleep(5)
+        messager.publish(to_string_control_endpoint, StringMessage("Stop"))
+
+        time.sleep(5)
+        messager.publish(string_writer_control_endpoint, StringMessage("Stop"))
     
-        logging.info("Waiting for IceMetadataSourceService to finish...")
-        ice_metadata_source_service.wait()
-    
-        logging.info("Waiting for VisibilityDatagramSourceService to finish...")
-        visibility_datagram_source_service.wait()
-    
-        logging.info("Waiting for AlignService to finish...")
-        align_service.wait()
-    
-        logging.info("Waiting for ToStringService to finish...")
-        to_string_service.wait()
-    
-        logging.info("Waiting for StringWriterService to finish...")
-        string_writer_service.wait()
-    
+        ice_metadata_source_service_container.terminate()
+        visibility_datagram_source_service_container.terminate()
+        align_service_container.terminate()
+        to_string_service_container.terminate()
+        string_writer_service_container.terminate()
+        monitor_service_container.terminate()
     
         # stop Ice
         logging.info("stopping Ice")
@@ -93,5 +132,5 @@ class TestAlignService(unittest.TestCase):
     
     
 if __name__ == '__main__':
-    main()
+    unittest.main()
     

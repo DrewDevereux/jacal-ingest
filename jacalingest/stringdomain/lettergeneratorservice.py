@@ -1,15 +1,14 @@
-"""This module contains dummy classes for generating messages"""
 import logging
 from string import ascii_lowercase
 from string import ascii_uppercase
 
 from jacalingest.engine.service import Service
-from jacalingest.engine.messagingsystem import MessagingSystem
+from jacalingest.stringdomain.stringmessage import StringMessage
 
 class LetterGeneratorService(Service):
     """A service that cycles through the alphabet, generating single letter messages"""
 
-    def __init__(self, messaging_context, topic, topic_group, upper=False):
+    def __init__(self, endpoint, upper=False):
         """Initialise an instance.
 
         Arguments:
@@ -17,11 +16,12 @@ class LetterGeneratorService(Service):
         topic -- the name of the messaging system topic to generate messages for
         upper -- a boolean indicating whether to generate upper case letters (default lower case)
         """
-        logging.debug("initializing")
+        logging.info("initializing")
 
-        super(LetterGeneratorService, self).__init__(messaging_context, {topic: topic_group}, None)
+        super(LetterGeneratorService, self).__init__()
+        self.endpoint = endpoint
+        self.messager = None
 
-        self.topic = topic
         self.letters = self.generate_letters(upper)
 
     def generate_letters(self, upper):
@@ -39,16 +39,18 @@ class LetterGeneratorService(Service):
             for letter in alphabet:
                 yield letter 
 
-    def drain(self):
-        super(LetterGeneratorService, self).drain()
-        self.drained()
+    def start(self):
+        logging.info("Starting")
 
-    def step(self):
+    def tick(self):
         """Performs a single iteration of processing; that is, publishes a single message containing the next letter in the cycle
         """
         letter = self.letters.next()
 
         logging.debug("Publishing message %s" % str(letter))
-        self.publish(self.topic, str(letter)) # shortcut; sending string directly rather than putting into a message
-        return True
+        self.messager.publish(self.endpoint, StringMessage(letter))
+        return None
+
+    def terminate(self):
+        logging.info("Terminating")
 

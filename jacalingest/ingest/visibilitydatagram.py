@@ -1,7 +1,7 @@
 import logging
 import struct
 
-from jacalingest.engine.message import Message
+from jacalingest.engine.messaging.message import Message
 
 class VisibilityDatagram(Message):
     def __init__(self, timestamp, block, card, channel, freq, beamid, visibilities):
@@ -18,8 +18,9 @@ class VisibilityDatagram(Message):
     visibilityformat = "ff"
     visibilitysize = struct.calcsize(visibilityformat)
 
-    def serialize(self):
-        return struct.pack(VisibilityDatagram.headerformat + VisibilityDatagram.visibilityformat*len(self.visibilities), self.timestamp, self.block, self.card, self.channel, self.freq, self.beamid, *(e for v in self.visibilities for e in v))
+    @staticmethod
+    def serialize(deserialized):
+        return struct.pack(VisibilityDatagram.headerformat + VisibilityDatagram.visibilityformat*len(deserialized.visibilities), deserialized.timestamp, deserialized.block, deserialized.card, deserialized.channel, deserialized.freq, deserialized.beamid, *(e for v in deserialized.visibilities for e in v))
 
     @staticmethod
     def deserialize(serialized):

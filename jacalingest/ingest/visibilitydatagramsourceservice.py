@@ -6,21 +6,21 @@ import threading
 import time
 
 from jacalingest.ingest.visibilitydatagram import VisibilityDatagram
-from jacalingest.engine.drainservice import DrainService
+from jacalingest.engine.statefulservice import StatefulService
 
 # ISSUES: Need to support max_beamid and max_slice
 
-class VisibilityDatagramSourceService(DrainService):
-    def __init__(self, host, port, messaging_context, data_topic, data_topic_group, udp_datagram_status_topic, my_status_topic, status_group, terminate=False, **kwargs):
-        logging.debug("Initializaing")
+class VisibilityDatagramSourceService(StatefulService):
+    IDLE_STATE = 1
+    PROCESSING_STATE = 2
 
-        topic_map={data_topic: data_topic_group,
-                   udp_datagram_status_topic: status_group,
-                   my_status_topic: status_group}
+    def __init__(self, host, port, visibility_datagram_endpoint, control_endpoint, **kwargs):
+        logging.debug("Initializing")
 
-        handlers = {udp_datagram_status_topic: self.handle_status}
+        super(VisibilityDatagramSourceService, self).__init__(self.IDLE_STATE)
 
-        super(VisibilityDatagramSourceService, self).__init__(messaging_context, topic_map, handlers, terminate=terminate)
+        self.visibility_datagram_endpoint = visibility_datagram_endpoint
+        self.control_endpoint = control_endpoint
 
         buffersize = kwargs.get('buffersize', 1024 * 1024 * 16)
 
@@ -31,28 +31,10 @@ class VisibilityDatagramSourceService(DrainService):
 
         self.buffer = Queue.Queue()
 
-        self.data_topic = data_topic
-        self.my_status_topic = my_status_topic
-
         self.udp_datagrams = dict()
 
         self.socketthread = threading.Thread(target=self.readFromSocket, name="%s socket thread" % self.__class__.__name__)
         self.__stopthread__ = False
-
-    def start_processing(self):
-        super(VisibilityDatagramSourceService, self).start_processing()
-        self.__stopthread__ = False
-        self.socketthread.start()
-
-    def stop_processing(self):
-        self.__stopthread__ = True
-        super(VisibilityDatagramSourceService, self).stop_processing()
-
-    def drained(self):
-        if self.my_status_topic:
-            logging.info("Drained; Sending 'Finished' message on topic {}".format(self.my_status_topic))
-            self.publish(self.my_status_topic, "Finished")
-        super(VisibilityDatagramSourceService, self).drained()
 
     def readFromSocket(self):
         while not self.__stopthread__:
@@ -65,17 +47,47 @@ class VisibilityDatagramSourceService(DrainService):
                 self.buffer.put(data)
                 logging.debug("Received some data! Buffer is now approximately %d long" % self.buffer.qsize())
 
-    def handle_status(self, message):
-        if message == "Finished":
-            logging.info("Received 'Finished' message; draining.")
-            self.drain()
+    def stateful_tick(self, state):
+        logging.debug("in stateful_tick with state {}".format(state))
+        always_state = self.always_tick()
 
-    def step(self):
+        if always_state is not None:
+            logging.info("New state is {}".format(always_state))
+            state = always_state
+
+        if state == self.PROCESSING_STATE:
+            processing_state = self.processing_tick()
+            if processing_state is None:
+                return always_state
+            else:
+                logging.info("New state is {}".format(processing_state))
+                return processing_state
+
+    def always_tick(self):
+        logging.debug("In always tick")
+        message = self.messager.poll(self.control_endpoint)
+        while message is not None:
+            if message.payload == "Start":
+                logging.info("Received 'Start' control message")
+                self.socketthread.start()
+                return self.PROCESSING_STATE
+            elif message.payload == "Stop":
+                logging.info("Received 'Stop' control message")
+                self.__stopthread__ = True
+                return self.IDLE_STATE
+            else:
+                logging.info("Received unknown control message: {}".format(message.payload))
+                return None
+            message = self.messager.poll(self.control_endpoint)
+
+    def processing_tick(self):
+        logging.debug("In processing_tick")
         while True:
             try:
                 data = self.buffer.get(block=False)
             except Queue.Empty:
-                return False
+                logging.debug("Queue is empty")
+                return None
             else:
                 logging.debug("Pulled some data from the buffer! Buffer is now approximately %d long" % self.buffer.qsize())
     
@@ -101,11 +113,11 @@ class VisibilityDatagramSourceService(DrainService):
                 vit = iter(flatvisibilities)
                 visibilities = zip(vit, vit)
                 message = VisibilityDatagram(udp_datagram.timestamp, udp_datagram.block, udp_datagram.card, udp_datagram.channel, udp_datagram.freq, udp_datagram.beamid, visibilities)
-                self.publish(self.data_topic, message.serialize())
+                self.messager.publish(self.visibility_datagram_endpoint, message)
                 logging.debug("Published a data message.")
 
                 del self.udp_datagrams[(udp_datagram.timestamp, udp_datagram.channel)]
-                return True
+                return None
 
 
 class UDPDatagram(object):

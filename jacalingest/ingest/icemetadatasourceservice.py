@@ -8,25 +8,23 @@ import IceStorm
 import icedefs.askap.interfaces
 import icedefs.askap.interfaces.datapublisher
 
+from jacalingest.engine.statefulservice import StatefulService
 from jacalingest.ingest.tosmetadata import TOSMetadata
-from jacalingest.engine.drainservice import DrainService
+from jacalingest.stringdomain.stringmessage import StringMessage
 
-class IceMetadataSourceService(DrainService):
-    def __init__(self, host, port, topic_manager_name, ice_topic_name, adapter_name, messaging_context, metadata_topic, metadata_topic_group, input_status_topic, output_status_topic, status_topic_group, terminate=False):
+class IceMetadataSourceService(StatefulService):
+    IDLE_STATE = 1
+    PROCESSING_STATE = 2
+
+    def __init__(self, host, port, topic_manager_name, ice_topic_name, adapter_name, metadata_endpoint, control_endpoint):
         logging.info("initializing")
 
-        topic_map = {metadata_topic: metadata_topic_group,
-                     input_status_topic: status_topic_group,
-                     output_status_topic: status_topic_group}
+        super(IceMetadataSourceService, self).__init__(self.IDLE_STATE)
 
-        handlers = {input_status_topic: self.handle_status}
-
-        super(IceMetadataSourceService, self).__init__(messaging_context, topic_map, handlers, terminate=terminate)
+        self.metadata_endpoint = metadata_endpoint
+        self.control_endpoint = control_endpoint
 
         self.buffer = Queue.Queue()
-
-        self.metadata_topic = metadata_topic
-        self.output_status_topic = output_status_topic
 
         # Set up ICE properties
         ice_properties = Ice.createProperties()
@@ -96,20 +94,45 @@ class IceMetadataSourceService(DrainService):
         logging.debug("Activating adapter")
         adapter.activate()
 
-    def __del__(self):
+    def terminate(self):
         if self.communicator:
             self.communicator.destroy()
 
-    def handle_status(self, message):
-        if message == "Finished":
-            logging.info("Received 'Finished' message.")
-            self.drain()
+    def stateful_tick(self, state):
+        always_state = self.always_tick()
 
-    def step(self):
+        if always_state is not None:
+            logging.info("New state is {}".format(always_state))
+            state = always_state
+
+        if state == self.PROCESSING_STATE:
+            processing_state = self.processing_tick()
+            if processing_state is None:
+                return always_state
+            else:
+                logging.info("New state is {}".format(processing_state))
+                return processing_state
+           
+    def always_tick(self):
+        message = self.messager.poll(self.control_endpoint)
+        while message is not None:
+            if message.payload == "Start":
+                logging.info("Received 'Start' control message")
+                return self.PROCESSING_STATE
+            elif message.payload == "Stop":
+                logging.info("Received 'Stop' control message")
+                return self.IDLE_STATE
+            else:
+                logging.info("Received unknown control message: {}".format(message.payload))
+                return None
+            message = self.messager.poll(self.control_endpoint)
+
+    def processing_tick(self):
         try:
             metadata = self.buffer.get(block=False)
         except Queue.Empty:
-            return False
+            #logging.info("queue is empty")
+            return None
         else:
             #logging.info("metadata.data keys are %s" % sorted(metadata.data.keys()))
             timestamp = metadata.timestamp;
@@ -147,17 +170,12 @@ class IceMetadataSourceService(DrainService):
                 antennas[antenna] = (actual_az, actual_el, actual_ra, actual_dec, actual_pol, flagged, on_source)
 
             message = TOSMetadata(timestamp, scanid, flagged, sky_frequency, target_name, target_ra, target_dec, phase_ra, phase_dec, corrmode, antennas)
-            self.publish(self.metadata_topic, message.serialize())
-            logging.info("Published a metadata message.")
-            return True
-
-    def drained(self):
-        if self.output_status_topic:
-            self.publish(self.output_status_topic, "Finished")
-        super(IceMetadataSourceService, self).drained()
+            self.messager.publish(self.metadata_endpoint, message)
+            logging.debug("Published a metadata message.")
+            return None
 
 
-    class _IcePublisher(icedefs.askap.interfaces.datapublisher.ITimeTaggedTypedValueMapPublisher): # need this class because "publish" method of main class shadows "publish" method of Service class
+    class _IcePublisher(icedefs.askap.interfaces.datapublisher.ITimeTaggedTypedValueMapPublisher):
 
         def __init__(self, buffer):
             self.buffer = buffer

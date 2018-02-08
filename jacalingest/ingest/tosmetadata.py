@@ -1,7 +1,7 @@
 import logging
 import struct
 
-from jacalingest.engine.message import Message
+from jacalingest.engine.messaging.message import Message
 
 class TOSMetadata(Message):
     J2000 = 1
@@ -20,16 +20,23 @@ class TOSMetadata(Message):
         self.corrmode = corrmode
         self.antennas = antennas
 
-    def serialize(self):
-        serialized = (TOSMetadata.TupleSerializer("!Qi?d").serialize((self.timestamp, self.scanid, self.flagged, self.sky_frequency))
-                     + TOSMetadata.StringSerializer().serialize(self.target_name)
-                     + TOSMetadata.TupleSerializer("!dddd").serialize((self.target_ra, self.target_dec, self.phase_ra, self.phase_dec))
-                     + TOSMetadata.StringSerializer().serialize(self.corrmode)
-                     + TOSMetadata.DictSerializer(TOSMetadata.StringSerializer(), TOSMetadata.TupleSerializer("!ddddd??")).serialize(self.antennas))
+    @staticmethod
+    def serialize(deserialized):
+        #logging.info("Need to serialize this:")
+        #logging.info(deserialized)
+        serialized = (TOSMetadata.TupleSerializer("!Qi?d").serialize((deserialized.timestamp, deserialized.scanid, deserialized.flagged, deserialized.sky_frequency))
+                     + TOSMetadata.StringSerializer().serialize(deserialized.target_name)
+                     + TOSMetadata.TupleSerializer("!dddd").serialize((deserialized.target_ra, deserialized.target_dec, deserialized.phase_ra, deserialized.phase_dec))
+                     + TOSMetadata.StringSerializer().serialize(deserialized.corrmode)
+                     + TOSMetadata.DictSerializer(TOSMetadata.StringSerializer(), TOSMetadata.TupleSerializer("!ddddd??")).serialize(deserialized.antennas))
+        #logging.info("Serializing into this TOSMetadata:")
+        #logging.info(serialized)
         return serialized
 
     @staticmethod
     def deserialize(serialized):
+        #logging.info("Deserializing this:")
+        #logging.info(serialized)
         ((timestamp, scanid, flagged, sky_frequency), tail) = TOSMetadata.TupleSerializer("!Qi?d").deserialize_next(serialized)
         (target_name, tail) = TOSMetadata.StringSerializer().deserialize_next(tail)
         ((target_ra, target_dec, phase_ra, phase_dec), tail) = TOSMetadata.TupleSerializer("!dddd").deserialize_next(tail)

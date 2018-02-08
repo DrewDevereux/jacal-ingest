@@ -3,11 +3,13 @@ import os
 import time
 import unittest
 
-from jacalingest.engine.queuemessagingsystem import QueueMessagingSystem
-from jacalingest.engine.service import Service
+from jacalingest.engine.servicecontainer import ServiceContainer
+from jacalingest.engine.messaging.messager import Messager
+from jacalingest.engine.messaging.queuemessagingsystem import QueueMessagingSystem
 from jacalingest.ingest.icemetadatasourceservice import IceMetadataSourceService
 from jacalingest.ingest.tosmetadata import TOSMetadata
 from jacalingest.stringdomain.tostringservice import ToStringService
+from jacalingest.stringdomain.stringmessage import StringMessage
 from jacalingest.stringdomain.stringwriterservice import StringWriterService
 from jacalingest.testbed.icerunner import IceRunner
 from jacalingest.testbed.playback import Playback
@@ -20,32 +22,41 @@ class TestIceMetadataSourceService(unittest.TestCase):
     
 
     def test(self):
-        queue_messaging_system = QueueMessagingSystem()
-        messaging_context = {"DATA": (queue_messaging_system, Service.WHEN_PROCESSING),
-                             "M&C": (queue_messaging_system, Service.ALWAYS)}
+        messaging_system = QueueMessagingSystem()
+        messager = Messager()
 
+        metadata_endpoint = messager.get_endpoint(messaging_system, "metadata", TOSMetadata)
+        metadata_control_endpoint = messager.get_endpoint(messaging_system, " metadatacontrol", StringMessage)
+
+        metadata_string_endpoint = messager.get_endpoint(messaging_system, "metadatastring", StringMessage)
+        tostring_control_endpoint = messager.get_endpoint(messaging_system, "tostringcontrol", StringMessage)
+        string_writer_control_endpoint = messager.get_endpoint(messaging_system, "stringwritercontrol", StringMessage)
+        
         # start Ice
         logging.info("Starting Ice")
         ice_runner = IceRunner("testbed_data")
         ice_runner.start()
 
         # set up the ice metadata source service
-        ice_metadata_source_service = IceMetadataSourceService("localhost", 4061, "IceStorm/TopicManager@IceStorm.TopicManager", "metadata", "IngestPipeline", messaging_context, "metadata", "DATA", "playbackstatus", "metadatastatus", "M&C", terminate=True)
+        ice_metadata_source_service = IceMetadataSourceService("localhost", 4061, "IceStorm/TopicManager@IceStorm.TopicManager", "metadata", "IngestPipeline", metadata_endpoint, metadata_control_endpoint)
+        ice_metadata_source_service_container = ServiceContainer(ice_metadata_source_service, messager)
 
-        to_string_service = ToStringService(messaging_context, TOSMetadata, "metadata", "metadatastring", "DATA", "metadatastatus", "tostringstatus", "M&C", terminate=True)
+        tostring_service = ToStringService(metadata_endpoint, metadata_string_endpoint, tostring_control_endpoint)
+        tostring_service_container = ServiceContainer(tostring_service, messager)
 
-        string_writer_service = StringWriterService(messaging_context, "metadatastring", "DATA", "tostringstatus", "M&C", "output.txt", terminate=True)
+        string_writer_service = StringWriterService(metadata_string_endpoint, string_writer_control_endpoint, "output.txt")
+        string_writer_service_container = ServiceContainer(string_writer_service, messager)
 
 
         logging.info("Starting services")
-        string_writer_service.start()
-        to_string_service.start()
-        ice_metadata_source_service.start()
+        string_writer_service_container.start()
+        tostring_service_container.start()
+        ice_metadata_source_service_container.start()
     
         logging.info("Starting processing")
-        string_writer_service.start_processing()
-        to_string_service.start_processing()
-        ice_metadata_source_service.start_processing()
+        messager.publish(string_writer_control_endpoint, StringMessage("Start"))
+        messager.publish(tostring_control_endpoint, StringMessage("Start"))
+        messager.publish(metadata_control_endpoint, StringMessage("Start"))
     
         # start playback
         logging.info("Starting playback")
@@ -53,17 +64,19 @@ class TestIceMetadataSourceService(unittest.TestCase):
         playback.playback("data/ade1card.ms")
         playback.wait()
 
-        logging.info("Playback has finished; sending drain message.")
-        queue_messaging_system.publish("playbackstatus", "Finished")
+        time.sleep(10)
+        messager.publish(metadata_control_endpoint, StringMessage("Stop"))
 
-        logging.info("Waiting for IceMetadataSourceService to finish...")
-        ice_metadata_source_service.wait()
+        time.sleep(10)
+        messager.publish(tostring_control_endpoint, StringMessage("Stop"))
 
-        logging.info("Waiting for ToStringService to finish...")
-        to_string_service.wait()
+        time.sleep(10)
+        messager.publish(string_writer_control_endpoint, StringMessage("Stop"))
 
-        logging.info("Waiting for StringWriterService to finish...")
-        string_writer_service.wait()
+        time.sleep(10)
+        ice_metadata_source_service_container.terminate()
+        tostring_service_container.terminate()
+        string_writer_service_container.terminate()
 
         # stop Ice
         logging.info("stopping Ice")
